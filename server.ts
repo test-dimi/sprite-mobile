@@ -56,6 +56,7 @@ function getContentType(path: string): string {
 // Start server
 const server = Bun.serve({
   port: PORT,
+  idleTimeout: 120, // seconds - needed for Claude summarization endpoints
 
   async fetch(req, server) {
     const url = new URL(req.url);
