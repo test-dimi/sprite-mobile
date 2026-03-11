@@ -9,7 +9,6 @@ import {
   generateId, UPLOADS_DIR
 } from "../lib/storage";
 import type { StoredMessage } from "../lib/types";
-import { backgroundProcesses, trySend } from "../lib/claude";
 import { discoverSprites, getSpriteStatus, getNetworkInfo, getHostname, updateHeartbeat, deleteSprite } from "../lib/network";
 import { allClients } from "./websocket";
 
@@ -74,10 +73,6 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
   // GET /api/sessions
   if (req.method === "GET" && path === "/api/sessions") {
     const sessions = loadSessions();
-    // Add real-time processing status
-    for (const s of sessions) {
-      s.isProcessing = backgroundProcesses.has(s.id);
-    }
     sessions.sort((a, b) => b.lastMessageAt - a.lastMessageAt);
     return Response.json(sessions);
   }
@@ -223,11 +218,6 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
 
         updateSession(id, { name: title });
 
-        const bg = backgroundProcesses.get(id);
-        if (bg) {
-          trySend(bg, JSON.stringify({ type: "refresh_sessions" }));
-        }
-
         return Response.json({ id, name: title });
       } catch (err) {
         console.error("Failed to regenerate title:", err);
@@ -273,14 +263,6 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
         }
       } catch (err) {
         console.error(`[API] Failed to rename messages file:`, err);
-      }
-
-      // Update background process map
-      const bg = backgroundProcesses.get(oldId);
-      if (bg) {
-        backgroundProcesses.delete(oldId);
-        backgroundProcesses.set(newId, bg);
-        console.log(`[API] Updated background process map`);
       }
 
       return Response.json({ success: true, oldId, newId });
@@ -331,11 +313,6 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
   // DELETE /api/sessions/:id
   if (req.method === "DELETE" && path.startsWith("/api/sessions/")) {
     const id = path.split("/")[3];
-    const bg = backgroundProcesses.get(id);
-    if (bg) {
-      try { bg.process.kill(9); } catch {}
-      backgroundProcesses.delete(id);
-    }
     let sessions = loadSessions();
     sessions = sessions.filter(s => s.id !== id);
     saveSessions(sessions);
@@ -542,17 +519,6 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
     } catch {
       return new Response("Not found", { status: 404 });
     }
-  }
-
-  // === Wake Recovery ===
-
-  // GET /api/recoverable-sessions - List sessions that can be resumed after wake
-  if (req.method === "GET" && path === "/api/recoverable-sessions") {
-    return (async () => {
-      const { findRecoverableSessions } = await import("../lib/wake-recovery");
-      const sessions = findRecoverableSessions();
-      return Response.json(sessions);
-    })();
   }
 
   // GET /api/keepalive/status - Check if keepalive process is running
