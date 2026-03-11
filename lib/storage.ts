@@ -9,11 +9,14 @@ export const UPLOADS_DIR = join(DATA_DIR, "uploads");
 const SESSIONS_FILE = join(DATA_DIR, "sessions.json");
 const SPRITES_FILE = join(DATA_DIR, "sprites.json");
 
+export const MEMORIES_DIR = join(DATA_DIR, "memories");
+
 // Ensure directories exist
 export function ensureDirectories() {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   if (!existsSync(MESSAGES_DIR)) mkdirSync(MESSAGES_DIR, { recursive: true });
   if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+  if (!existsSync(MEMORIES_DIR)) mkdirSync(MEMORIES_DIR, { recursive: true });
 }
 
 // Generate UUID

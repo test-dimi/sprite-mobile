@@ -13,6 +13,15 @@ The skill covers:
 - API endpoints and WebSocket protocol
 - Common troubleshooting tasks
 
+## Session Memories
+
+Per-session memory summaries are stored as markdown files in `data/memories/`. Each file is named `{sessionId}.md` and contains a YAML frontmatter block (title, session ID, date) followed by a markdown summary of what was discussed, decided, and built in that session.
+
+To review past work, read the files in `data/memories/`. You can also use the API:
+- `GET /api/memories` — list all memories
+- `GET /api/memories/:id` — read a specific memory
+- `POST /api/memories/:id/generate` — auto-generate a summary from the conversation
+
 ## Git Commits
 
 Do NOT add "Co-Authored-By" lines to commit messages. Just write normal commit messages without any co-author attribution.

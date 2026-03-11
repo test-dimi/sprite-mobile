@@ -6,10 +6,13 @@ export async function generateChatName(message: string, sessionId: string): Prom
   try {
     const prompt = `Generate a very short title (3-5 words max) for a chat that starts with this message. Reply with ONLY the title, no quotes or punctuation:\n\n${message.slice(0, 500)}`;
 
+    const env = { ...process.env };
+    delete env.CLAUDECODE;
     const proc = spawn({
       cmd: ["claude", "--print", "-p", prompt],
       stdout: "pipe",
       stderr: "pipe",
+      env,
     });
 
     const output = await new Response(proc.stdout).text();

@@ -10,6 +10,7 @@ import {
 } from "../lib/storage";
 import type { StoredMessage } from "../lib/types";
 import { discoverSprites, getSpriteStatus, getNetworkInfo, getHostname, updateHeartbeat, deleteSprite } from "../lib/network";
+import { listMemories, getMemory, saveMemory, deleteMemory, getCombinedContext, generateMemory } from "../lib/memory";
 import { allClients } from "./websocket";
 
 // Broadcast a message to all connected keepalive clients
@@ -207,10 +208,13 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
       try {
         const prompt = `Based on this conversation, generate a very short title (3-5 words max) that captures the main topic. Reply with ONLY the title, no quotes or punctuation:\n\n${conversationSummary.slice(0, 1500)}`;
 
+        const env = { ...process.env };
+        delete env.CLAUDECODE;
         const proc = spawn({
           cmd: ["claude", "--print", "-p", prompt],
           stdout: "pipe",
           stderr: "pipe",
+          env,
         });
 
         const output = await new Response(proc.stdout).text();
@@ -519,6 +523,68 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
     } catch {
       return new Response("Not found", { status: 404 });
     }
+  }
+
+  // === Session Memories ===
+
+  // GET /api/memories - List all memories
+  if (req.method === "GET" && path === "/api/memories") {
+    const memories = listMemories();
+    return Response.json(memories);
+  }
+
+  // POST /api/memories/context - Get combined context from selected sessions
+  if (req.method === "POST" && path === "/api/memories/context") {
+    return (async () => {
+      const body = await req.json().catch(() => ({})) as { sessionIds?: string[] };
+      if (!body.sessionIds || !Array.isArray(body.sessionIds)) {
+        return new Response("sessionIds array required", { status: 400 });
+      }
+      const context = getCombinedContext(body.sessionIds);
+      return Response.json({ context });
+    })();
+  }
+
+  // GET /api/memories/:id - Get a specific memory
+  if (req.method === "GET" && path.match(/^\/api\/memories\/[^/]+$/)) {
+    const id = path.split("/")[3];
+    const content = getMemory(id);
+    if (!content) return new Response("Not found", { status: 404 });
+    return new Response(content, { headers: { "Content-Type": "text/markdown" } });
+  }
+
+  // PUT /api/memories/:id - Save/update a memory manually
+  if (req.method === "PUT" && path.match(/^\/api\/memories\/[^/]+$/)) {
+    return (async () => {
+      const id = path.split("/")[3];
+      const content = await req.text();
+      if (!content.trim()) return new Response("Content required", { status: 400 });
+      saveMemory(id, content);
+      return Response.json({ success: true, sessionId: id });
+    })();
+  }
+
+  // POST /api/memories/:id/generate - Auto-generate memory from conversation
+  if (req.method === "POST" && path.match(/^\/api\/memories\/[^/]+\/generate$/)) {
+    return (async () => {
+      const id = path.split("/")[3];
+      const session = getSession(id);
+      const title = session?.name || id;
+      try {
+        const memory = await generateMemory(id, title);
+        return Response.json({ success: true, sessionId: id, content: memory });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 400 });
+      }
+    })();
+  }
+
+  // DELETE /api/memories/:id - Delete a memory
+  if (req.method === "DELETE" && path.match(/^\/api\/memories\/[^/]+$/)) {
+    const id = path.split("/")[3];
+    const deleted = deleteMemory(id);
+    if (!deleted) return new Response("Not found", { status: 404 });
+    return new Response(null, { status: 204 });
   }
 
   // GET /api/keepalive/status - Check if keepalive process is running
