@@ -696,6 +696,17 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
     })();
   }
 
+  // === Wake Recovery ===
+
+  // GET /api/recoverable-sessions - List sessions that can be resumed after wake
+  if (req.method === "GET" && path === "/api/recoverable-sessions") {
+    return (async () => {
+      const { findRecoverableSessions } = await import("../lib/wake-recovery");
+      const sessions = findRecoverableSessions();
+      return Response.json(sessions);
+    })();
+  }
+
   // GET /api/keepalive/status - Check if keepalive process is running
   if (req.method === "GET" && path === "/api/keepalive/status") {
     return (async () => {

@@ -6,6 +6,7 @@ import { handleApi } from "./routes/api";
 import { websocketHandlers, allClients } from "./routes/websocket";
 import { initNetwork, registerSprite, updateHeartbeat, buildSpriteRegistration, isNetworkEnabled } from "./lib/network";
 import { initTasksNetwork } from "./lib/distributed-tasks";
+import { getMostRecentSession } from "./lib/wake-recovery";
 
 // Load .env file if present
 const ENV_FILE = join(import.meta.dir, ".env");
@@ -151,5 +152,11 @@ if (tasksEnabled) {
 //     }
 //   }, 300);
 // });
+
+// Check for recoverable sessions from previous runs / sprite wake
+const recoverable = getMostRecentSession();
+if (recoverable) {
+  console.log(`Recoverable Claude session found: ${recoverable.claudeSessionId} (modified ${Math.round((Date.now() - recoverable.modifiedAt) / 1000)}s ago)`);
+}
 
 console.log(`Claude Mobile server running on http://localhost:${PORT}`);

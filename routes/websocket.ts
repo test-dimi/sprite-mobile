@@ -4,14 +4,40 @@ import type { BackgroundProcess, StoredMessage } from "../lib/types";
 import { loadMessages, saveMessage, getSession, updateSession, UPLOADS_DIR, getInProgressMessage } from "../lib/storage";
 import {
   backgroundProcesses, spawnClaude, generateChatName,
-  handleClaudeOutput, handleClaudeStderr
+  handleClaudeOutput, handleClaudeStderr,
+  getActiveProcess, setActiveProcess, killActiveProcess
 } from "../lib/claude";
+import { getMostRecentSession } from "../lib/wake-recovery";
 
 // Track all connected clients for broadcast messages (e.g., reload)
 export const allClients = new Set<any>();
 
 // Track hub WebSocket connections per client
 const hubConnections = new Map<any, WebSocket>();
+
+// Grace period: delay killing the Claude process when all clients disconnect
+let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const GRACE_PERIOD_MS = 10_000; // 10 seconds
+
+function cancelGracePeriod(): void {
+  if (disconnectTimer) {
+    clearTimeout(disconnectTimer);
+    disconnectTimer = null;
+    console.log(`[Grace] Reconnect within grace period, cancelled disconnect timer`);
+  }
+}
+
+function startGracePeriodTimer(): void {
+  if (disconnectTimer) clearTimeout(disconnectTimer);
+  disconnectTimer = setTimeout(() => {
+    const current = getActiveProcess();
+    if (current && current.clients.size === 0 && !current.isGenerating) {
+      console.log(`[Grace] Grace period expired, killing Claude process for session ${current.sessionId}`);
+      killActiveProcess();
+    }
+    disconnectTimer = null;
+  }, GRACE_PERIOD_MS);
+}
 
 // Start keepalive session to keep sprite awake during generation
 async function startKeepalive() {
@@ -113,13 +139,17 @@ export const websocketHandlers = {
       claudeSessionId?: string;
     };
 
-    // Check if there's already a background process for this session
-    const existingBg = backgroundProcesses.get(sessionId);
+    // Cancel any pending grace period disconnect timer
+    cancelGracePeriod();
+
+    // Check if there's already an active Claude process (singleton)
+    const existingBg = getActiveProcess();
     if (existingBg) {
-      console.log(`Client joined session ${sessionId} (${existingBg.clients.size + 1} clients now)`);
+      // Attach to existing process regardless of session ID
+      console.log(`[Singleton] Client attached to active process (session ${existingBg.sessionId}, ${existingBg.clients.size + 1} clients now)`);
       existingBg.clients.add(ws);
 
-      // Send history to this new client (including any in-progress message)
+      // Send history for the requested session
       const messages = loadMessages(sessionId);
       const inProgress = getInProgressMessage(sessionId);
       const allMessages = inProgress ? [...messages, inProgress] : messages;
@@ -128,7 +158,6 @@ export const websocketHandlers = {
         ws.send(JSON.stringify({ type: "history", messages: allMessages }));
       }
 
-      // Only notify if Claude is actively generating a response
       if (existingBg.isGenerating) {
         ws.send(JSON.stringify({ type: "system", message: "Joined session - Claude is still working", sessionId }));
         ws.send(JSON.stringify({ type: "processing", isProcessing: true }));
@@ -147,8 +176,20 @@ export const websocketHandlers = {
       ws.send(JSON.stringify({ type: "history", messages: allMessages }));
     }
 
-    // Spawn new Claude process
-    const process = spawnClaude(cwd, claudeSessionId);
+    // Try to resume from a recent Claude session (wake recovery)
+    let resumeId = claudeSessionId;
+    if (!resumeId) {
+      const recoverable = getMostRecentSession();
+      if (recoverable) {
+        resumeId = recoverable.claudeSessionId;
+        console.log(`[Wake Recovery] Found recent session: ${resumeId} (${Math.round((Date.now() - recoverable.modifiedAt) / 1000)}s ago)`);
+        updateSession(sessionId, { claudeSessionId: resumeId });
+        ws.send(JSON.stringify({ type: "system", message: "Resumed from previous session", sessionId }));
+      }
+    }
+
+    // Spawn new Claude process (singleton - only one at a time)
+    const process = spawnClaude(cwd, resumeId);
     const bg: BackgroundProcess = {
       process,
       buffer: "",
@@ -158,7 +199,7 @@ export const websocketHandlers = {
       startedAt: Date.now(),
       isGenerating: false,
     };
-    backgroundProcesses.set(sessionId, bg);
+    setActiveProcess(bg);
 
     // Start handling output (continues even if ws disconnects)
     handleClaudeOutput(bg);
@@ -193,23 +234,23 @@ export const websocketHandlers = {
     const sessionId = wsData.sessionId;
     if (!sessionId) return;
 
-    let bg = backgroundProcesses.get(sessionId);
+    let bg = getActiveProcess();
 
-    // If no background process exists, check if this is a user message and spawn a new one
+    // If no active process exists, check if this is a user message and spawn a new one
     if (!bg) {
       try {
         const data = JSON.parse(message.toString());
 
         // Only spawn new process for user messages, not for interrupts
         if (data.type === "user" && (data.content || data.imageId)) {
-          console.log(`Spawning new Claude process for session ${sessionId} after interruption`);
+          console.log(`[Singleton] Spawning new Claude process for session ${sessionId} after interruption`);
           const session = getSession(sessionId);
           const cwd = session?.cwd || process.env.HOME || "/home/sprite";
           const claudeSessionId = session?.claudeSessionId;
 
-          const process = spawnClaude(cwd, claudeSessionId);
+          const proc = spawnClaude(cwd, claudeSessionId);
           bg = {
-            process,
+            process: proc,
             buffer: "",
             assistantBuffer: "",
             sessionId,
@@ -217,7 +258,7 @@ export const websocketHandlers = {
             startedAt: Date.now(),
             isGenerating: false,
           };
-          backgroundProcesses.set(sessionId, bg);
+          setActiveProcess(bg);
 
           // Start handling output
           handleClaudeOutput(bg);
@@ -242,9 +283,7 @@ export const websocketHandlers = {
         // Kill the Claude process to stop it immediately
         try {
           console.log(`Interrupting Claude process for session ${sessionId}`);
-          bg.process.kill();
-          backgroundProcesses.delete(sessionId);
-          updateSession(sessionId, { isProcessing: false });
+          killActiveProcess();
 
           // Notify clients that processing stopped
           for (const client of bg.clients) {
@@ -373,11 +412,17 @@ export const websocketHandlers = {
     const sessionId = wsData.sessionId;
     if (!sessionId) return;
 
-    const bg = backgroundProcesses.get(sessionId);
+    const bg = getActiveProcess();
 
     if (bg) {
       bg.clients.delete(ws);
       console.log(`Client left session ${sessionId} (${bg.clients.size} clients remaining)`);
+
+      // Start grace period when last client disconnects
+      if (bg.clients.size === 0) {
+        console.log(`[Grace] Last client left, starting ${GRACE_PERIOD_MS / 1000}s grace period`);
+        startGracePeriodTimer();
+      }
     } else {
       console.log(`Client disconnected from session ${sessionId}`);
     }

@@ -1,9 +1,88 @@
 import { spawn, type Subprocess } from "bun";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
 import type { BackgroundProcess } from "./types";
 import { saveMessage, updateSession, saveInProgressMessage, clearInProgressMessage } from "./storage";
 
-// Background process tracking - persists across WebSocket reconnects
-export const backgroundProcesses = new Map<string, BackgroundProcess>();
+// Global singleton - only ONE Claude process at a time
+let activeProcess: BackgroundProcess | null = null;
+
+// Legacy compatibility: backgroundProcesses facade over singleton
+// This allows code that checks .has(sessionId) or .get(sessionId) to still work
+export const backgroundProcesses = {
+  get(sessionId: string): BackgroundProcess | undefined {
+    return activeProcess?.sessionId === sessionId ? activeProcess : undefined;
+  },
+  has(sessionId: string): boolean {
+    return activeProcess?.sessionId === sessionId;
+  },
+  set(sessionId: string, bg: BackgroundProcess): void {
+    setActiveProcess(bg);
+  },
+  delete(sessionId: string): boolean {
+    if (activeProcess?.sessionId === sessionId) {
+      activeProcess = null;
+      return true;
+    }
+    return false;
+  },
+  get size(): number {
+    return activeProcess ? 1 : 0;
+  },
+  [Symbol.iterator](): Iterator<[string, BackgroundProcess]> {
+    let done = false;
+    const proc = activeProcess;
+    return {
+      next() {
+        if (!done && proc) {
+          done = true;
+          return { value: [proc.sessionId, proc] as [string, BackgroundProcess], done: false };
+        }
+        return { value: undefined, done: true };
+      },
+    };
+  },
+};
+
+export function getActiveProcess(): BackgroundProcess | null {
+  return activeProcess;
+}
+
+export function setActiveProcess(bg: BackgroundProcess | null): void {
+  // Kill any existing process if replacing with a different one
+  if (activeProcess && bg && activeProcess !== bg) {
+    console.log(`[Singleton] Replacing process for session ${activeProcess.sessionId} with ${bg.sessionId}`);
+    try { activeProcess.process.kill(); } catch {}
+    updateSession(activeProcess.sessionId, { isProcessing: false });
+  }
+  activeProcess = bg;
+}
+
+export function killActiveProcess(): void {
+  if (activeProcess) {
+    console.log(`[Singleton] Killing active process for session ${activeProcess.sessionId}`);
+    try { activeProcess.process.kill(); } catch {}
+    updateSession(activeProcess.sessionId, { isProcessing: false });
+    clearActiveSessionFile();
+    activeProcess = null;
+  }
+}
+
+const ACTIVE_SESSION_DIR = join(process.env.HOME || "/home/sprite", ".claude-hub");
+const ACTIVE_SESSION_FILE = join(ACTIVE_SESSION_DIR, "active-session");
+
+function writeActiveSessionFile(claudeSessionId: string): void {
+  try {
+    if (!existsSync(ACTIVE_SESSION_DIR)) mkdirSync(ACTIVE_SESSION_DIR, { recursive: true });
+    writeFileSync(ACTIVE_SESSION_FILE, claudeSessionId);
+  } catch {}
+}
+
+function clearActiveSessionFile(): void {
+  try {
+    if (existsSync(ACTIVE_SESSION_FILE)) unlinkSync(ACTIVE_SESSION_FILE);
+  } catch {}
+}
 
 // Broadcast to all connected clients
 export function trySend(bg: BackgroundProcess, data: string) {
@@ -99,6 +178,7 @@ export async function handleClaudeOutput(bg: BackgroundProcess) {
           // Capture Claude's session ID from init
           if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
             updateSession(bg.sessionId, { claudeSessionId: msg.session_id });
+            writeActiveSessionFile(msg.session_id);
           }
 
           // Accumulate assistant text from streaming deltas
@@ -165,7 +245,10 @@ export async function handleClaudeOutput(bg: BackgroundProcess) {
   }
   console.log(`Claude process finished for session ${bg.sessionId}`);
   updateSession(bg.sessionId, { isProcessing: false });
-  backgroundProcesses.delete(bg.sessionId);
+  if (activeProcess === bg) {
+    activeProcess = null;
+    clearActiveSessionFile();
+  }
 }
 
 // Handle stderr - just forward to client if connected
@@ -187,15 +270,13 @@ export async function handleClaudeStderr(bg: BackgroundProcess) {
 
 // Cleanup stale processes
 export function cleanupStaleProcesses() {
+  if (!activeProcess) return;
+
   const now = Date.now();
   const maxAge = 30 * 60 * 1000; // 30 minutes
 
-  for (const [sessionId, bg] of backgroundProcesses) {
-    if (now - bg.startedAt > maxAge && bg.clients.size === 0) {
-      console.log(`Cleaning up stale process for session ${sessionId}`);
-      try { bg.process.kill(9); } catch {}
-      backgroundProcesses.delete(sessionId);
-      updateSession(sessionId, { isProcessing: false });
-    }
+  if (now - activeProcess.startedAt > maxAge && activeProcess.clients.size === 0) {
+    console.log(`Cleaning up stale process for session ${activeProcess.sessionId}`);
+    killActiveProcess();
   }
 }
