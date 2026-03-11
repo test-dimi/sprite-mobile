@@ -1,13 +1,5 @@
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
-import type { BackgroundProcess, StoredMessage } from "../lib/types";
-import { loadMessages, saveMessage, getSession, updateSession, UPLOADS_DIR, getInProgressMessage } from "../lib/storage";
-import {
-  backgroundProcesses, spawnClaude, generateChatName,
-  handleClaudeOutput, handleClaudeStderr,
-  getActiveProcess, setActiveProcess, killActiveProcess
-} from "../lib/claude";
-import { getMostRecentSession } from "../lib/wake-recovery";
+import { loadMessages, getSession, updateSession, getInProgressMessage } from "../lib/storage";
+import { generateChatName } from "../lib/claude";
 
 // Track all connected clients for broadcast messages (e.g., reload)
 export const allClients = new Set<any>();
@@ -15,29 +7,7 @@ export const allClients = new Set<any>();
 // Track hub WebSocket connections per client
 const hubConnections = new Map<any, WebSocket>();
 
-// Grace period: delay killing the Claude process when all clients disconnect
-let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
-const GRACE_PERIOD_MS = 10_000; // 10 seconds
-
-function cancelGracePeriod(): void {
-  if (disconnectTimer) {
-    clearTimeout(disconnectTimer);
-    disconnectTimer = null;
-    console.log(`[Grace] Reconnect within grace period, cancelled disconnect timer`);
-  }
-}
-
-function startGracePeriodTimer(): void {
-  if (disconnectTimer) clearTimeout(disconnectTimer);
-  disconnectTimer = setTimeout(() => {
-    const current = getActiveProcess();
-    if (current && current.clients.size === 0 && !current.isGenerating) {
-      console.log(`[Grace] Grace period expired, killing Claude process for session ${current.sessionId}`);
-      killActiveProcess();
-    }
-    disconnectTimer = null;
-  }, GRACE_PERIOD_MS);
-}
+const GO_HUB_URL = process.env.GO_HUB_URL || "ws://localhost:9090";
 
 // Start keepalive session to keep sprite awake during generation
 async function startKeepalive() {
@@ -72,12 +42,12 @@ function proxyToGoHub(clientWs: any, sessionId: string) {
 
     // Handle hub connection open
     hubWs.onopen = () => {
-      console.log(`[GO HUB] Connected to hub for session ${sessionId}`);
+      console.log(`[Hub] Connected for session ${sessionId}`);
     };
 
     // Handle hub connection close
     hubWs.onclose = () => {
-      console.log(`[GO HUB] Disconnected from hub for session ${sessionId}`);
+      console.log(`[Hub] Disconnected for session ${sessionId}`);
       hubConnections.delete(clientWs);
       if (clientWs.readyState === 1) {
         clientWs.close();
@@ -86,13 +56,13 @@ function proxyToGoHub(clientWs: any, sessionId: string) {
 
     // Handle hub connection error
     hubWs.onerror = (error: any) => {
-      console.error(`[GO HUB] Error for session ${sessionId}:`, error);
+      console.error(`[Hub] Error for session ${sessionId}:`, error);
       hubConnections.delete(clientWs);
       if (clientWs.readyState === 1) {
         try {
           clientWs.send(JSON.stringify({
             type: "error",
-            message: "Failed to connect to Go hub"
+            message: "Failed to connect to hub"
           }));
         } catch {}
         clientWs.close();
@@ -100,20 +70,16 @@ function proxyToGoHub(clientWs: any, sessionId: string) {
     };
 
   } catch (error) {
-    console.error(`[GO HUB] Failed to create proxy for session ${sessionId}:`, error);
+    console.error(`[Hub] Failed to create proxy for session ${sessionId}:`, error);
     try {
       clientWs.send(JSON.stringify({
         type: "error",
-        message: "Failed to connect to Go hub"
+        message: "Failed to connect to hub"
       }));
     } catch {}
     clientWs.close();
   }
 }
-
-// Feature flag for Go hub (set to true to enable proxy mode)
-const USE_GO_HUB = process.env.USE_GO_HUB === "true" || false;
-const GO_HUB_URL = process.env.GO_HUB_URL || "ws://localhost:9090";
 
 export const websocketHandlers = {
   open(ws: any) {
@@ -126,86 +92,10 @@ export const websocketHandlers = {
       return;
     }
 
-    // If using Go hub, proxy the connection
-    if (USE_GO_HUB && data.sessionId) {
-      console.log(`[GO HUB] Proxying session ${data.sessionId} to ${GO_HUB_URL}`);
+    if (data.sessionId) {
+      console.log(`[Hub] Proxying session ${data.sessionId}`);
       proxyToGoHub(ws, data.sessionId);
-      return;
     }
-
-    const { sessionId, cwd, claudeSessionId } = data as {
-      sessionId: string;
-      cwd: string;
-      claudeSessionId?: string;
-    };
-
-    // Cancel any pending grace period disconnect timer
-    cancelGracePeriod();
-
-    // Check if there's already an active Claude process (singleton)
-    const existingBg = getActiveProcess();
-    if (existingBg) {
-      // Attach to existing process regardless of session ID
-      console.log(`[Singleton] Client attached to active process (session ${existingBg.sessionId}, ${existingBg.clients.size + 1} clients now)`);
-      existingBg.clients.add(ws);
-
-      // Send history for the requested session
-      const messages = loadMessages(sessionId);
-      const inProgress = getInProgressMessage(sessionId);
-      const allMessages = inProgress ? [...messages, inProgress] : messages;
-      if (allMessages.length > 0) {
-        console.log(`[${sessionId}] Sending history to new client: ${allMessages.length} messages (${inProgress ? 'including in-progress' : 'all complete'})`);
-        ws.send(JSON.stringify({ type: "history", messages: allMessages }));
-      }
-
-      if (existingBg.isGenerating) {
-        ws.send(JSON.stringify({ type: "system", message: "Joined session - Claude is still working", sessionId }));
-        ws.send(JSON.stringify({ type: "processing", isProcessing: true }));
-      }
-      return;
-    }
-
-    console.log(`Client connected to session ${sessionId}${claudeSessionId ? ` (resuming ${claudeSessionId})` : ""}`);
-
-    // Send stored message history (including any in-progress message)
-    const messages = loadMessages(sessionId);
-    const inProgress = getInProgressMessage(sessionId);
-    const allMessages = inProgress ? [...messages, inProgress] : messages;
-    if (allMessages.length > 0) {
-      console.log(`[${sessionId}] Sending history: ${allMessages.length} messages (${inProgress ? 'including in-progress' : 'all complete'})`);
-      ws.send(JSON.stringify({ type: "history", messages: allMessages }));
-    }
-
-    // Try to resume from a recent Claude session (wake recovery)
-    let resumeId = claudeSessionId;
-    if (!resumeId) {
-      const recoverable = getMostRecentSession();
-      if (recoverable) {
-        resumeId = recoverable.claudeSessionId;
-        console.log(`[Wake Recovery] Found recent session: ${resumeId} (${Math.round((Date.now() - recoverable.modifiedAt) / 1000)}s ago)`);
-        updateSession(sessionId, { claudeSessionId: resumeId });
-        ws.send(JSON.stringify({ type: "system", message: "Resumed from previous session", sessionId }));
-      }
-    }
-
-    // Spawn new Claude process (singleton - only one at a time)
-    const process = spawnClaude(cwd, resumeId);
-    const bg: BackgroundProcess = {
-      process,
-      buffer: "",
-      assistantBuffer: "",
-      sessionId,
-      clients: new Set([ws]),
-      startedAt: Date.now(),
-      isGenerating: false,
-    };
-    setActiveProcess(bg);
-
-    // Start handling output (continues even if ws disconnects)
-    handleClaudeOutput(bg);
-    handleClaudeStderr(bg);
-
-    ws.send(JSON.stringify({ type: "system", message: "Connected to Claude Code", sessionId }));
   },
 
   async message(ws: any, message: any) {
@@ -214,176 +104,32 @@ export const websocketHandlers = {
     // Ignore messages on keepalive connections
     if (wsData.type === "keepalive") return;
 
-    // If using Go hub, forward message to hub
-    if (USE_GO_HUB) {
-      const hubWs = hubConnections.get(ws);
-      if (hubWs && hubWs.readyState === 1) {
-        // Start keepalive when user sends a message (keeps sprite awake during generation)
-        try {
-          const data = JSON.parse(message.toString());
-          if (data.type === "user") {
-            startKeepalive().catch(() => {}); // Fire and forget
-          }
-        } catch {}
-
-        hubWs.send(message.toString());
-      }
-      return;
-    }
-
-    const sessionId = wsData.sessionId;
-    if (!sessionId) return;
-
-    let bg = getActiveProcess();
-
-    // If no active process exists, check if this is a user message and spawn a new one
-    if (!bg) {
+    const hubWs = hubConnections.get(ws);
+    if (hubWs && hubWs.readyState === 1) {
+      // Start keepalive when user sends a message (keeps sprite awake during generation)
       try {
         const data = JSON.parse(message.toString());
+        if (data.type === "user") {
+          startKeepalive().catch(() => {}); // Fire and forget
 
-        // Only spawn new process for user messages, not for interrupts
-        if (data.type === "user" && (data.content || data.imageId)) {
-          console.log(`[Singleton] Spawning new Claude process for session ${sessionId} after interruption`);
-          const session = getSession(sessionId);
-          const cwd = session?.cwd || process.env.HOME || "/home/sprite";
-          const claudeSessionId = session?.claudeSessionId;
-
-          const proc = spawnClaude(cwd, claudeSessionId);
-          bg = {
-            process: proc,
-            buffer: "",
-            assistantBuffer: "",
-            sessionId,
-            clients: new Set([ws]),
-            startedAt: Date.now(),
-            isGenerating: false,
-          };
-          setActiveProcess(bg);
-
-          // Start handling output
-          handleClaudeOutput(bg);
-          handleClaudeStderr(bg);
-
-          // Small delay to let the process initialize
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } else {
-          ws.send(JSON.stringify({ type: "error", message: "No active Claude process" }));
-          return;
-        }
-      } catch (err) {
-        ws.send(JSON.stringify({ type: "error", message: "No active Claude process" }));
-        return;
-      }
-    }
-
-    try {
-      const data = JSON.parse(message.toString());
-
-      if (data.type === "interrupt") {
-        // Kill the Claude process to stop it immediately
-        try {
-          console.log(`Interrupting Claude process for session ${sessionId}`);
-          killActiveProcess();
-
-          // Notify clients that processing stopped
-          for (const client of bg.clients) {
-            if (client.readyState === 1) {
-              try {
-                client.send(JSON.stringify({ type: "result" }));
-              } catch {}
+          // Auto-generate chat title for first message
+          const sessionId = wsData.sessionId;
+          if (sessionId && data.content) {
+            const existingMessages = loadMessages(sessionId);
+            const session = getSession(sessionId);
+            if (existingMessages.length === 0 && session?.name.match(/^Chat \d+$/)) {
+              generateChatName(data.content, sessionId).then(title => {
+                // Notify all clients in this session to refresh
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: "refresh_sessions" }));
+                }
+              }).catch(() => {});
             }
           }
-        } catch (err) {
-          console.error("Error interrupting process:", err);
         }
-        return;
-      }
+      } catch {}
 
-      if (data.type === "user" && (data.content || data.imageId)) {
-        // Check if this is the first message - auto-rename the session
-        const existingMessages = loadMessages(sessionId);
-        const session = getSession(sessionId);
-        if (existingMessages.length === 0 && session?.name.match(/^Chat \d+$/)) {
-          // Fire off title generation in background (don't await)
-          generateChatName(data.content || "Image shared", sessionId, bg);
-        }
-
-        // Build message content for Claude
-        let claudeContent: any = data.content || "";
-        let imageInfo: StoredMessage["image"] = undefined;
-
-        // Handle image if present
-        if (data.imageId && data.imageFilename && data.imageMediaType) {
-          const imagePath = join(UPLOADS_DIR, sessionId, data.imageFilename);
-          if (existsSync(imagePath)) {
-            const imageBuffer = readFileSync(imagePath);
-            const base64Data = imageBuffer.toString("base64");
-
-            // Build content array for Claude with image
-            claudeContent = [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: data.imageMediaType,
-                  data: base64Data,
-                },
-              },
-            ];
-
-            // Add text - either provided content or a placeholder for image-only messages
-            claudeContent.push({
-              type: "text",
-              text: data.content || "What's in this image?",
-            });
-
-            imageInfo = {
-              id: data.imageId,
-              filename: data.imageFilename,
-              mediaType: data.imageMediaType,
-            };
-          }
-        }
-
-        // Save user message
-        const userMsg: StoredMessage = {
-          role: "user",
-          content: data.content || "[Image]",
-          timestamp: Date.now(),
-          image: imageInfo,
-        };
-        saveMessage(sessionId, userMsg);
-        console.log(`[${sessionId}] Saved user message`);
-        updateSession(sessionId, {
-          lastMessageAt: Date.now(),
-          lastMessage: "You: " + (data.content ? data.content.slice(0, 50) : "[Image]"),
-          isProcessing: true,
-        });
-
-        // Broadcast user message to OTHER clients (not the sender)
-        for (const client of bg.clients) {
-          if (client !== ws && client.readyState === 1) {
-            try {
-              client.send(JSON.stringify({ type: "user_message", message: userMsg }));
-            } catch {}
-          }
-        }
-
-        // Small delay to ensure client-side renders user message before assistant starts
-        await new Promise(resolve => setTimeout(resolve, 50));
-
-        // Send to Claude
-        const claudeMsg = JSON.stringify({
-          type: "user",
-          message: { role: "user", content: claudeContent },
-        }) + "\n";
-
-        bg.isGenerating = true;
-        bg.process.stdin.write(claudeMsg);
-        bg.process.stdin.flush();
-      }
-    } catch (err) {
-      console.error("Error handling message:", err);
+      hubWs.send(message.toString());
     }
   },
 
@@ -397,34 +143,12 @@ export const websocketHandlers = {
       return;
     }
 
-    // If using Go hub, close hub connection
-    if (USE_GO_HUB) {
-      const hubWs = hubConnections.get(ws);
-      if (hubWs) {
-        hubConnections.delete(ws);
-        if (hubWs.readyState === 1) {
-          hubWs.close();
-        }
+    const hubWs = hubConnections.get(ws);
+    if (hubWs) {
+      hubConnections.delete(ws);
+      if (hubWs.readyState === 1) {
+        hubWs.close();
       }
-      return;
-    }
-
-    const sessionId = wsData.sessionId;
-    if (!sessionId) return;
-
-    const bg = getActiveProcess();
-
-    if (bg) {
-      bg.clients.delete(ws);
-      console.log(`Client left session ${sessionId} (${bg.clients.size} clients remaining)`);
-
-      // Start grace period when last client disconnects
-      if (bg.clients.size === 0) {
-        console.log(`[Grace] Last client left, starting ${GRACE_PERIOD_MS / 1000}s grace period`);
-        startGracePeriodTimer();
-      }
-    } else {
-      console.log(`Client disconnected from session ${sessionId}`);
     }
   },
 };

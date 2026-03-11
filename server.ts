@@ -1,11 +1,9 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { ensureDirectories, getSession } from "./lib/storage";
-import { cleanupStaleProcesses } from "./lib/claude";
 import { handleApi } from "./routes/api";
 import { websocketHandlers, allClients } from "./routes/websocket";
 import { initNetwork, registerSprite, updateHeartbeat, buildSpriteRegistration, isNetworkEnabled } from "./lib/network";
-import { getMostRecentSession } from "./lib/wake-recovery";
 
 // Load .env file if present
 const ENV_FILE = join(import.meta.dir, ".env");
@@ -110,9 +108,6 @@ const server = Bun.serve({
   websocket: websocketHandlers,
 });
 
-// Cleanup stale processes every minute
-setInterval(cleanupStaleProcesses, 60 * 1000);
-
 // Initialize sprite network for discovery
 const networkEnabled = initNetwork();
 if (networkEnabled) {
@@ -143,11 +138,5 @@ if (networkEnabled) {
 //     }
 //   }, 300);
 // });
-
-// Check for recoverable sessions from previous runs / sprite wake
-const recoverable = getMostRecentSession();
-if (recoverable) {
-  console.log(`Recoverable Claude session found: ${recoverable.claudeSessionId} (modified ${Math.round((Date.now() - recoverable.modifiedAt) / 1000)}s ago)`);
-}
 
 console.log(`Claude Mobile server running on http://localhost:${PORT}`);
