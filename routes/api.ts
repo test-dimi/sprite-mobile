@@ -696,6 +696,73 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
     })();
   }
 
+  // === Wake Recovery ===
+
+  // GET /api/recoverable-sessions - List sessions that can be resumed after wake
+  if (req.method === "GET" && path === "/api/recoverable-sessions") {
+    return (async () => {
+      const { findRecoverableSessions } = await import("../lib/wake-recovery");
+      const sessions = findRecoverableSessions();
+      return Response.json(sessions);
+    })();
+  }
+
+  // === Worker Sprites ===
+
+  // GET /api/workers - List worker sprites
+  if (req.method === "GET" && path === "/api/workers") {
+    return (async () => {
+      const { listWorkers } = await import("../lib/worker-sprites");
+      return Response.json(listWorkers());
+    })();
+  }
+
+  // POST /api/workers - Create a new worker sprite
+  if (req.method === "POST" && path === "/api/workers") {
+    return (async () => {
+      const body = await req.json().catch(() => ({}));
+      if (!body.name) {
+        return new Response("Worker name required", { status: 400 });
+      }
+      const { createWorkerSprite } = await import("../lib/worker-sprites");
+      try {
+        const worker = await createWorkerSprite(body.name);
+        return Response.json(worker);
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500 });
+      }
+    })();
+  }
+
+  // POST /api/workers/delegate - Delegate work to a worker sprite
+  if (req.method === "POST" && path === "/api/workers/delegate") {
+    return (async () => {
+      const body = await req.json().catch(() => ({}));
+      if (!body.title || !body.description) {
+        return new Response("title and description required", { status: 400 });
+      }
+      const { delegateWork } = await import("../lib/worker-sprites");
+      try {
+        const result = await delegateWork(body.title, body.description, body.worker);
+        return Response.json(result);
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 400 });
+      }
+    })();
+  }
+
+  // DELETE /api/workers/:name - Remove a worker sprite from the pool
+  if (req.method === "DELETE" && path.match(/^\/api\/workers\/[^/]+$/)) {
+    return (async () => {
+      const name = decodeURIComponent(path.split("/")[3]);
+      const { removeWorker } = await import("../lib/worker-sprites");
+      if (removeWorker(name)) {
+        return new Response(null, { status: 204 });
+      }
+      return new Response("Worker not found", { status: 404 });
+    })();
+  }
+
   // GET /api/keepalive/status - Check if keepalive process is running
   if (req.method === "GET" && path === "/api/keepalive/status") {
     return (async () => {
