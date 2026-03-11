@@ -5,7 +5,6 @@ import { cleanupStaleProcesses } from "./lib/claude";
 import { handleApi } from "./routes/api";
 import { websocketHandlers, allClients } from "./routes/websocket";
 import { initNetwork, registerSprite, updateHeartbeat, buildSpriteRegistration, isNetworkEnabled } from "./lib/network";
-import { initTasksNetwork } from "./lib/distributed-tasks";
 import { getMostRecentSession } from "./lib/wake-recovery";
 
 // Load .env file if present
@@ -127,14 +126,6 @@ if (networkEnabled) {
   setInterval(() => {
     updateHeartbeat().catch((err) => console.error("Heartbeat failed:", err));
   }, 5 * 60 * 1000);
-}
-
-// Initialize distributed tasks
-const tasksEnabled = initTasksNetwork();
-if (tasksEnabled) {
-  console.log("Distributed tasks enabled");
-} else {
-  console.log("Distributed tasks disabled (no credentials)");
 }
 
 // Hot-reloading disabled to prevent constant app refreshes during conversations
