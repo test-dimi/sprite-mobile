@@ -86,7 +86,11 @@ echo ""
 
 # Step 4: Download setup script
 echo "Step 4: Downloading setup script..."
-sprite -s "$SPRITE_NAME" -o "$ORG" exec -- bash -c "curl -fsSL https://raw.githubusercontent.com/clouvet/sprite-mobile/refs/heads/main/scripts/sprite-setup.sh -o ~/sprite-setup.sh && chmod +x ~/sprite-setup.sh"
+# Use SPRITE_MOBILE_REPO from config if set, otherwise fall back to upstream
+SETUP_REPO="${SPRITE_MOBILE_REPO:-https://github.com/clouvet/sprite-mobile}"
+# Convert github.com URL to raw.githubusercontent.com URL for the setup script
+SETUP_RAW_URL=$(echo "$SETUP_REPO" | sed 's|https://github.com/|https://raw.githubusercontent.com/|')/refs/heads/main/scripts/sprite-setup.sh
+sprite -s "$SPRITE_NAME" -o "$ORG" exec -- bash -c "curl -fsSL '$SETUP_RAW_URL' -o ~/sprite-setup.sh && chmod +x ~/sprite-setup.sh"
 echo "  Downloaded sprite-setup.sh"
 echo ""
 
