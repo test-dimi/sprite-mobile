@@ -98,13 +98,31 @@ CONFIG_HEADER
         chmod 600 "$SPRITE_CONFIG_FILE"
     fi
 
+    # Quote values that contain spaces or special characters
+    local quoted_value="$value"
+    if [[ "$value" =~ [[:space:]] || "$value" =~ [\"\'\`\$\#\!\&\|\;\(\)] ]]; then
+        # Escape any existing double quotes in the value
+        local escaped_for_quotes="${value//\\/\\\\}"
+        escaped_for_quotes="${escaped_for_quotes//\"/\\\"}"
+        quoted_value="\"${escaped_for_quotes}\""
+    fi
+
     # Update or append the key
     if grep -q "^${key}=" "$SPRITE_CONFIG_FILE" 2>/dev/null; then
-        # Escape special characters in value for sed
-        local escaped_value=$(printf '%s\n' "$value" | sed 's/[&/\]/\\&/g')
-        sed -i "s|^${key}=.*|${key}=${escaped_value}|" "$SPRITE_CONFIG_FILE"
+        # Use a temp file approach to avoid sed escaping issues
+        local tmpfile
+        tmpfile=$(mktemp)
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" =~ ^${key}= ]]; then
+                echo "${key}=${quoted_value}"
+            else
+                echo "$line"
+            fi
+        done < "$SPRITE_CONFIG_FILE" > "$tmpfile"
+        mv "$tmpfile" "$SPRITE_CONFIG_FILE"
+        chmod 600 "$SPRITE_CONFIG_FILE"
     else
-        echo "${key}=${value}" >> "$SPRITE_CONFIG_FILE"
+        echo "${key}=${quoted_value}" >> "$SPRITE_CONFIG_FILE"
     fi
 
     # Export for current session
@@ -325,6 +343,18 @@ parse_pasted_config() {
     done <<< "$config"
 }
 
+# Quote a value for writing to config file if it contains spaces or special chars
+quote_config_value() {
+    local val="$1"
+    if [[ "$val" =~ [[:space:]] || "$val" =~ [\"\'\`\$\#\!\&\|\;\(\)] ]]; then
+        local escaped="${val//\\/\\\\}"
+        escaped="${escaped//\"/\\\"}"
+        echo "\"${escaped}\""
+    else
+        echo "$val"
+    fi
+}
+
 # Save current config (tokens only, no sprite-specific values)
 save_config() {
     echo "Saving reusable config to $SPRITE_CONFIG_FILE..."
@@ -335,31 +365,31 @@ save_config() {
 # NOTE: SPRITE_PUBLIC_URL is intentionally omitted (unique per sprite)
 
 # Git configuration
-GIT_USER_NAME=$GIT_USER_NAME
-GIT_USER_EMAIL=$GIT_USER_EMAIL
+GIT_USER_NAME=$(quote_config_value "$GIT_USER_NAME")
+GIT_USER_EMAIL=$(quote_config_value "$GIT_USER_EMAIL")
 
 # Repository
-SPRITE_MOBILE_REPO=$SPRITE_MOBILE_REPO
+SPRITE_MOBILE_REPO=$(quote_config_value "$SPRITE_MOBILE_REPO")
 
 # Authentication tokens
 EOF
 
-    [ -n "$GH_TOKEN" ] && echo "GH_TOKEN=$GH_TOKEN" >> "$SPRITE_CONFIG_FILE"
-    [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN" >> "$SPRITE_CONFIG_FILE"
-    [ -n "$ANTHROPIC_API_KEY" ] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> "$SPRITE_CONFIG_FILE"
-    [ -n "$TAILSCALE_AUTH_KEY" ] && echo "TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY" >> "$SPRITE_CONFIG_FILE"
-    [ -n "$FLY_API_TOKEN" ] && echo "FLY_API_TOKEN=$FLY_API_TOKEN" >> "$SPRITE_CONFIG_FILE"
-    [ -n "$SPRITE_API_TOKEN" ] && echo "SPRITE_API_TOKEN=$SPRITE_API_TOKEN" >> "$SPRITE_CONFIG_FILE"
+    [ -n "$GH_TOKEN" ] && echo "GH_TOKEN=$(quote_config_value "$GH_TOKEN")" >> "$SPRITE_CONFIG_FILE"
+    [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo "CLAUDE_CODE_OAUTH_TOKEN=$(quote_config_value "$CLAUDE_CODE_OAUTH_TOKEN")" >> "$SPRITE_CONFIG_FILE"
+    [ -n "$ANTHROPIC_API_KEY" ] && echo "ANTHROPIC_API_KEY=$(quote_config_value "$ANTHROPIC_API_KEY")" >> "$SPRITE_CONFIG_FILE"
+    [ -n "$TAILSCALE_AUTH_KEY" ] && echo "TAILSCALE_AUTH_KEY=$(quote_config_value "$TAILSCALE_AUTH_KEY")" >> "$SPRITE_CONFIG_FILE"
+    [ -n "$FLY_API_TOKEN" ] && echo "FLY_API_TOKEN=$(quote_config_value "$FLY_API_TOKEN")" >> "$SPRITE_CONFIG_FILE"
+    [ -n "$SPRITE_API_TOKEN" ] && echo "SPRITE_API_TOKEN=$(quote_config_value "$SPRITE_API_TOKEN")" >> "$SPRITE_CONFIG_FILE"
 
     # Sprite network credentials
     if [ -n "$SPRITE_NETWORK_S3_BUCKET" ]; then
         echo "" >> "$SPRITE_CONFIG_FILE"
         echo "# Sprite Network" >> "$SPRITE_CONFIG_FILE"
-        echo "SPRITE_NETWORK_S3_BUCKET=$SPRITE_NETWORK_S3_BUCKET" >> "$SPRITE_CONFIG_FILE"
-        [ -n "$SPRITE_NETWORK_S3_ACCESS_KEY" ] && echo "SPRITE_NETWORK_S3_ACCESS_KEY=$SPRITE_NETWORK_S3_ACCESS_KEY" >> "$SPRITE_CONFIG_FILE"
-        [ -n "$SPRITE_NETWORK_S3_SECRET_KEY" ] && echo "SPRITE_NETWORK_S3_SECRET_KEY=$SPRITE_NETWORK_S3_SECRET_KEY" >> "$SPRITE_CONFIG_FILE"
-        [ -n "$SPRITE_NETWORK_S3_ENDPOINT" ] && echo "SPRITE_NETWORK_S3_ENDPOINT=$SPRITE_NETWORK_S3_ENDPOINT" >> "$SPRITE_CONFIG_FILE"
-        [ -n "$SPRITE_NETWORK_ORG" ] && echo "SPRITE_NETWORK_ORG=$SPRITE_NETWORK_ORG" >> "$SPRITE_CONFIG_FILE"
+        echo "SPRITE_NETWORK_S3_BUCKET=$(quote_config_value "$SPRITE_NETWORK_S3_BUCKET")" >> "$SPRITE_CONFIG_FILE"
+        [ -n "$SPRITE_NETWORK_S3_ACCESS_KEY" ] && echo "SPRITE_NETWORK_S3_ACCESS_KEY=$(quote_config_value "$SPRITE_NETWORK_S3_ACCESS_KEY")" >> "$SPRITE_CONFIG_FILE"
+        [ -n "$SPRITE_NETWORK_S3_SECRET_KEY" ] && echo "SPRITE_NETWORK_S3_SECRET_KEY=$(quote_config_value "$SPRITE_NETWORK_S3_SECRET_KEY")" >> "$SPRITE_CONFIG_FILE"
+        [ -n "$SPRITE_NETWORK_S3_ENDPOINT" ] && echo "SPRITE_NETWORK_S3_ENDPOINT=$(quote_config_value "$SPRITE_NETWORK_S3_ENDPOINT")" >> "$SPRITE_CONFIG_FILE"
+        [ -n "$SPRITE_NETWORK_ORG" ] && echo "SPRITE_NETWORK_ORG=$(quote_config_value "$SPRITE_NETWORK_ORG")" >> "$SPRITE_CONFIG_FILE"
     fi
 
     chmod 600 "$SPRITE_CONFIG_FILE"
@@ -1208,6 +1238,8 @@ step_7_tailscale() {
         echo "$TAILSCALE_AUTH_KEY" > "$TAILSCALE_AUTH_KEY_FILE"
         chmod 600 "$TAILSCALE_AUTH_KEY_FILE"
         sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY"
+        # Save to ~/.sprite-config for portability across sprites
+        update_sprite_config "TAILSCALE_AUTH_KEY" "$TAILSCALE_AUTH_KEY"
     elif [ "$NON_INTERACTIVE" = "true" ]; then
         echo "Warning: Tailscale not connected and no auth key provided"
         echo "  Tailscale requires interactive authentication or an auth key"
@@ -1242,6 +1274,8 @@ step_7_tailscale() {
                 echo "$TAILSCALE_AUTH_KEY" > "$TAILSCALE_AUTH_KEY_FILE"
                 chmod 600 "$TAILSCALE_AUTH_KEY_FILE"
                 echo "Auth key saved for future sprite setups"
+                # Save to ~/.sprite-config for portability across sprites
+                update_sprite_config "TAILSCALE_AUTH_KEY" "$TAILSCALE_AUTH_KEY"
                 echo ""
                 echo "Authenticating Tailscale with auth key..."
                 sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY"
