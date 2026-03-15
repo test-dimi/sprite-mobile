@@ -49,4 +49,34 @@ export interface NetworkSprite {
   ownerEmail?: string;
   registeredAt: number;
   lastSeen: number;
+  capabilities?: SpriteCapabilities;
+}
+
+export interface SpriteCapabilities {
+  plugins: string[];
+  skills: string[];
+  knowledgeTopics: string[];
+}
+
+export interface SharedKnowledge {
+  id: string;
+  hostname: string;
+  type: "memory" | "summary" | "claude-md" | "decision";
+  title: string;
+  content: string;
+  updatedAt: number;
+}
+
+export interface NetworkTask {
+  id: string;
+  from: string;
+  to: string | "*";
+  prompt: string;
+  context?: string;
+  status: "pending" | "claimed" | "running" | "done" | "failed";
+  claimedBy?: string;
+  result?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
 }

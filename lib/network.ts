@@ -169,7 +169,7 @@ export function getHostname(): string {
   return process.env.SPRITE_HOSTNAME || hostname().split(".")[0];
 }
 
-export function buildSpriteRegistration(): NetworkSprite {
+export function buildSpriteRegistration(capabilities?: import("./types").SpriteCapabilities): NetworkSprite {
   const now = Date.now();
   const spriteHostname = getHostname();
 
@@ -181,5 +181,6 @@ export function buildSpriteRegistration(): NetworkSprite {
     ownerEmail: process.env.SPRITE_OWNER_EMAIL || "",
     registeredAt: now,
     lastSeen: now,
+    capabilities,
   };
 }

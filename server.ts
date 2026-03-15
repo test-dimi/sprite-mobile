@@ -4,6 +4,8 @@ import { ensureDirectories, getSession } from "./lib/storage";
 import { handleApi } from "./routes/api";
 import { websocketHandlers, allClients } from "./routes/websocket";
 import { initNetwork, registerSprite, updateHeartbeat, buildSpriteRegistration, isNetworkEnabled } from "./lib/network";
+import { initKnowledge, publishAll, collectCapabilities } from "./lib/knowledge";
+import { initTasks, startTaskWorker } from "./lib/tasks";
 
 // Load .env file if present
 const ENV_FILE = join(import.meta.dir, ".env");
@@ -112,8 +114,9 @@ const server = Bun.serve({
 // Initialize sprite network for discovery
 const networkEnabled = initNetwork();
 if (networkEnabled) {
-  // Register this sprite on startup
-  const spriteInfo = buildSpriteRegistration();
+  // Collect capabilities and register with them
+  const capabilities = collectCapabilities();
+  const spriteInfo = buildSpriteRegistration(capabilities);
   registerSprite(spriteInfo)
     .then(() => console.log(`Registered in sprite network as: ${spriteInfo.hostname}`))
     .catch((err) => console.error("Failed to register in sprite network:", err));
@@ -122,6 +125,26 @@ if (networkEnabled) {
   setInterval(() => {
     updateHeartbeat().catch((err) => console.error("Heartbeat failed:", err));
   }, 5 * 60 * 1000);
+
+  // Initialize knowledge store and publish on startup
+  const knowledgeEnabled = initKnowledge();
+  if (knowledgeEnabled) {
+    // Publish knowledge after a short delay to not block startup
+    setTimeout(() => {
+      publishAll().catch((err) => console.error("Knowledge publish failed:", err));
+    }, 3000);
+
+    // Re-publish knowledge every 10 minutes
+    setInterval(() => {
+      publishAll().catch((err) => console.error("Knowledge re-publish failed:", err));
+    }, 10 * 60 * 1000);
+  }
+
+  // Initialize task system and start worker
+  const tasksEnabled = initTasks();
+  if (tasksEnabled) {
+    startTaskWorker();
+  }
 }
 
 // Hot-reloading disabled to prevent constant app refreshes during conversations

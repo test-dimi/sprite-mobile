@@ -10,6 +10,8 @@ import {
 } from "../lib/storage";
 import type { StoredMessage } from "../lib/types";
 import { discoverSprites, getSpriteStatus, getNetworkInfo, getHostname, updateHeartbeat, deleteSprite } from "../lib/network";
+import { fetchAllKnowledge, fetchNetworkKnowledge, publishAll, collectCapabilities, fetchAllCapabilities } from "../lib/knowledge";
+import { submitTask, listTasks, getTaskResult, deleteTask, getMySubmittedTasks } from "../lib/tasks";
 import { listMemories, getMemory, saveMemory, deleteMemory, getCombinedContext, generateMemory } from "../lib/memory";
 import { allClients } from "./websocket";
 
@@ -671,6 +673,93 @@ export function handleApi(req: Request, url: URL): Response | Promise<Response> 
         console.error("[Keepalive] Error starting:", err);
         return Response.json({ success: false, error: String(err) }, { status: 500 });
       }
+    })();
+  }
+
+  // === Network Knowledge ===
+
+  // GET /api/network/knowledge - Fetch shared knowledge from network
+  if (req.method === "GET" && path === "/api/network/knowledge") {
+    return (async () => {
+      const type = url.searchParams.get("type") || undefined;
+      const from = url.searchParams.get("from") || undefined;
+      const selfOnly = url.searchParams.get("self") === "true";
+
+      const knowledge = selfOnly
+        ? await fetchAllKnowledge(type, getHostname())
+        : await (from ? fetchAllKnowledge(type, from) : fetchNetworkKnowledge(type));
+
+      return Response.json(knowledge);
+    })();
+  }
+
+  // POST /api/network/knowledge/publish - Publish this sprite's knowledge
+  if (req.method === "POST" && path === "/api/network/knowledge/publish") {
+    return (async () => {
+      await publishAll();
+      return Response.json({ ok: true });
+    })();
+  }
+
+  // GET /api/network/capabilities - Get all sprites' capabilities
+  if (req.method === "GET" && path === "/api/network/capabilities") {
+    return (async () => {
+      const all = await fetchAllCapabilities();
+      return Response.json(all);
+    })();
+  }
+
+  // GET /api/network/capabilities/self - Get this sprite's capabilities
+  if (req.method === "GET" && path === "/api/network/capabilities/self") {
+    return Response.json(collectCapabilities());
+  }
+
+  // === Network Tasks ===
+
+  // POST /api/network/tasks - Submit a task to another sprite
+  if (req.method === "POST" && path === "/api/network/tasks") {
+    return (async () => {
+      const body = await req.json().catch(() => ({})) as { to?: string; prompt?: string; context?: string };
+      if (!body.to || !body.prompt) {
+        return new Response("to and prompt required", { status: 400 });
+      }
+      const task = await submitTask(body.to, body.prompt, body.context);
+      return Response.json(task);
+    })();
+  }
+
+  // GET /api/network/tasks - List tasks
+  if (req.method === "GET" && path === "/api/network/tasks") {
+    return (async () => {
+      const status = url.searchParams.get("status") || undefined;
+      const to = url.searchParams.get("to") || undefined;
+      const from = url.searchParams.get("from") || undefined;
+      const mine = url.searchParams.get("mine") === "true";
+
+      const tasks = mine
+        ? await getMySubmittedTasks()
+        : await listTasks({ status, to, from });
+
+      return Response.json(tasks);
+    })();
+  }
+
+  // GET /api/network/tasks/:id - Get task result
+  if (req.method === "GET" && path.match(/^\/api\/network\/tasks\/[^/]+$/)) {
+    return (async () => {
+      const taskId = path.split("/")[4];
+      const task = await getTaskResult(taskId);
+      if (!task) return new Response("Not found", { status: 404 });
+      return Response.json(task);
+    })();
+  }
+
+  // DELETE /api/network/tasks/:id - Delete a task
+  if (req.method === "DELETE" && path.match(/^\/api\/network\/tasks\/[^/]+$/)) {
+    return (async () => {
+      const taskId = path.split("/")[4];
+      await deleteTask(taskId);
+      return Response.json({ ok: true });
     })();
   }
 
