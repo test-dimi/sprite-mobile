@@ -1126,26 +1126,31 @@ CREDS_EOF
                     BUCKET_NAME="sprite-network-${FLY_ORG}"
                     echo "Creating Tigris bucket: $BUCKET_NAME"
 
-                    # Create the bucket
-                    if flyctl storage create -o "$FLY_ORG" -n "$BUCKET_NAME" --public; then
+                    # Create the bucket and capture output (credentials are printed by create)
+                    CREATE_OUTPUT=$(flyctl storage create -o "$FLY_ORG" -n "$BUCKET_NAME" --public -y 2>&1)
+                    CREATE_EXIT=$?
+
+                    if [ $CREATE_EXIT -eq 0 ]; then
                         echo "Bucket created successfully"
 
-                        # Get credentials
-                        echo "Fetching credentials..."
-                        CREDS_OUTPUT=$(flyctl storage dashboard -o "$FLY_ORG" "$BUCKET_NAME" --json 2>/dev/null || echo "{}")
+                        # Extract credentials from create output
+                        # flyctl storage create prints lines like:
+                        #   AWS_ACCESS_KEY_ID = tid_xxx
+                        #   AWS_SECRET_ACCESS_KEY = tsec_xxx
+                        #   AWS_ENDPOINT_URL_S3 = https://fly.storage.tigris.dev
+                        #   BUCKET_NAME = bucket-name
+                        AWS_ACCESS_KEY_ID=$(echo "$CREATE_OUTPUT" | grep 'AWS_ACCESS_KEY_ID' | sed 's/.*= *//')
+                        AWS_SECRET_ACCESS_KEY=$(echo "$CREATE_OUTPUT" | grep 'AWS_SECRET_ACCESS_KEY' | sed 's/.*= *//')
+                        AWS_ENDPOINT_URL_S3=$(echo "$CREATE_OUTPUT" | grep 'AWS_ENDPOINT_URL_S3' | sed 's/.*= *//')
 
-                        if echo "$CREDS_OUTPUT" | grep -q "AWS_ACCESS_KEY_ID"; then
+                        if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
                             mkdir -p "$SPRITE_NETWORK_DIR"
-                            # Extract credentials from flyctl output
-                            AWS_ACCESS_KEY_ID=$(echo "$CREDS_OUTPUT" | grep -o '"AWS_ACCESS_KEY_ID":"[^"]*"' | cut -d'"' -f4)
-                            AWS_SECRET_ACCESS_KEY=$(echo "$CREDS_OUTPUT" | grep -o '"AWS_SECRET_ACCESS_KEY":"[^"]*"' | cut -d'"' -f4)
-                            AWS_ENDPOINT_URL_S3=$(echo "$CREDS_OUTPUT" | grep -o '"AWS_ENDPOINT_URL_S3":"[^"]*"' | cut -d'"' -f4)
 
                             cat > "$SPRITE_NETWORK_CREDS" << CREDS_EOF
 {
   "AWS_ACCESS_KEY_ID": "$AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY": "$AWS_SECRET_ACCESS_KEY",
-  "AWS_ENDPOINT_URL_S3": "$AWS_ENDPOINT_URL_S3",
+  "AWS_ENDPOINT_URL_S3": "${AWS_ENDPOINT_URL_S3:-https://fly.storage.tigris.dev}",
   "BUCKET_NAME": "$BUCKET_NAME",
   "ORG": "$FLY_ORG"
 }
@@ -1153,9 +1158,11 @@ CREDS_EOF
                             chmod 600 "$SPRITE_NETWORK_CREDS"
                             echo "Credentials saved to $SPRITE_NETWORK_CREDS"
                         else
-                            echo "Could not fetch credentials automatically."
-                            echo "Run: flyctl storage dashboard -o $FLY_ORG $BUCKET_NAME"
-                            echo "Then use option 2 to enter credentials manually."
+                            echo "Could not parse credentials from flyctl output."
+                            echo "Output was:"
+                            echo "$CREATE_OUTPUT"
+                            echo ""
+                            echo "Please use option 2 to enter credentials manually."
                         fi
                     else
                         echo "Failed to create bucket. It may already exist - try option 2."
